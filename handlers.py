@@ -23,9 +23,10 @@ def _pay_keyboard(pay_url: str) -> InlineKeyboardMarkup:
 
 
 async def _send_invoice(message: Message, telegram_id: int) -> None:
+    price = await db.get_price(telegram_id, SUBSCRIPTION_PRICE_USD)
     paid_btn_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else None
     invoice = await create_invoice(
-        amount_usd=SUBSCRIPTION_PRICE_USD,
+        amount_usd=price,
         telegram_id=telegram_id,
         description=f"Подписка на {CHANNEL_TITLE} — 1 месяц",
         paid_btn_url=paid_btn_url,
@@ -33,10 +34,10 @@ async def _send_invoice(message: Message, telegram_id: int) -> None:
     await db.create_invoice_record(
         invoice_id=invoice["invoice_id"],
         telegram_id=telegram_id,
-        amount=SUBSCRIPTION_PRICE_USD,
+        amount=price,
     )
     text = (
-        f"Подписка на {CHANNEL_TITLE}: ${SUBSCRIPTION_PRICE_USD}/мес.\n"
+        f"Подписка на {CHANNEL_TITLE}: ${price}/мес.\n"
         "Оплата в крипте (USDT/TON/BTC — на выбор при оплате). "
         "После оплаты доступ откроется автоматически."
     )

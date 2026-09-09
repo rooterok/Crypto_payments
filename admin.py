@@ -3,16 +3,20 @@
 Нужны в первую очередь чтобы:
   - вручную перенести уже существующих платных участников (/grant),
     прежде чем включать автоматический кик за просрочку;
-  - смотреть, сколько активных подписок и выручка за месяц (/stats).
+  - смотреть, сколько активных подписок и выручка за месяц (/stats);
+  - назначать индивидуальные условия конкретному человеку (/setprice);
+  - смотреть всю базу подписчиков целиком (/list).
 """
+import csv
 import datetime as dt
+import io
 
 from aiogram import Bot, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import BufferedInputFile, Message
 
 import db
-from config import ADMIN_IDS
+from config import ADMIN_IDS, SUBSCRIPTION_PRICE_USD
 
 router = Router()
 
@@ -77,9 +81,78 @@ async def cmd_find(message: Message) -> None:
     if not user:
         await message.answer("Такого пользователя нет в базе.")
         return
+    price = user.get("custom_price_usd") or f"{SUBSCRIPTION_PRICE_USD} (стандартная)"
     await message.answer(
         f"id: {user['telegram_id']}\n"
         f"username: @{user['username']}\n"
         f"статус: {user['status']}\n"
-        f"paid_until: {user['paid_until']}"
+        f"paid_until: {user['paid_until']}\n"
+        f"цена: ${price}"
     )
+
+
+@router.message(Command("setprice"))
+async def cmd_setprice(message: Message) -> None:
+    """/setprice <telegram_id> <сумма|default> — индивидуальная цена подписки
+    для конкретного человека (например, скидка постоянному участнику).
+    Применится к следующему выставленному счёту (при /pay или при
+    автопродлении); на уже отправленный счёт не влияет.
+    /setprice <telegram_id> default — вернуть стандартную цену."""
+    if not _is_admin(message.from_user.id):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("Использование: /setprice <telegram_id> <сумма|default>")
+        return
+    try:
+        telegram_id = int(parts[1])
+    except ValueError:
+        await message.answer("telegram_id должен быть числом")
+        return
+
+    await db.get_or_create_user(telegram_id, None)
+    if parts[2].lower() == "default":
+        await db.set_custom_price(telegram_id, None)
+        await message.answer(f"У {telegram_id} снова стандартная цена (${SUBSCRIPTION_PRICE_USD}).")
+        return
+    try:
+        price = str(float(parts[2].replace(",", ".")))
+    except ValueError:
+        await message.answer("Сумма должна быть числом, например 15 или 15.5")
+        return
+    await db.set_custom_price(telegram_id, price)
+    await message.answer(f"Готово. У {telegram_id} теперь персональная цена: ${price}/мес.")
+
+
+@router.message(Command("list", "export"))
+async def cmd_list(message: Message) -> None:
+    """/list — выгружает всю базу подписчиков CSV-файлом (открывается в Excel/
+    Google Таблицах/Numbers): id, username, статус, до какой даты активна
+    подписка, персональная цена, дата первого обращения к боту."""
+    if not _is_admin(message.from_user.id):
+        return
+    users = await db.get_all_users()
+    if not users:
+        await message.answer("База пока пуста.")
+        return
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        ["telegram_id", "username", "status", "paid_until", "custom_price_usd", "created_at"]
+    )
+    for u in users:
+        writer.writerow(
+            [
+                u["telegram_id"],
+                u["username"] or "",
+                u["status"],
+                u["paid_until"] or "",
+                u["custom_price_usd"] or "",
+                u["created_at"],
+            ]
+        )
+    data = buf.getvalue().encode("utf-8-sig")  # BOM, чтобы Excel сразу понял кодировку
+    today = dt.date.today().isoformat()
+    file = BufferedInputFile(data, filename=f"subscribers_{today}.csv")
+    await message.answer_document(file, caption=f"Подписчиков в базе: {len(users)}")

@@ -32,9 +32,10 @@ async def remind_expiring(bot: Bot) -> None:
     for user in users:
         telegram_id = user["telegram_id"]
         try:
+            price = await db.get_price(telegram_id, SUBSCRIPTION_PRICE_USD)
             paid_btn_url = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else None
             invoice = await create_invoice(
-                amount_usd=SUBSCRIPTION_PRICE_USD,
+                amount_usd=price,
                 telegram_id=telegram_id,
                 description=f"Продление подписки на {CHANNEL_TITLE} — 1 месяц",
                 paid_btn_url=paid_btn_url,
@@ -42,13 +43,13 @@ async def remind_expiring(bot: Bot) -> None:
             await db.create_invoice_record(
                 invoice_id=invoice["invoice_id"],
                 telegram_id=telegram_id,
-                amount=SUBSCRIPTION_PRICE_USD,
+                amount=price,
             )
             until = dt.datetime.fromisoformat(user["paid_until"]).strftime("%d.%m.%Y")
             await bot.send_message(
                 telegram_id,
                 f"⏳ Подписка на {CHANNEL_TITLE} заканчивается {until}.\n"
-                f"Продлить на месяц (${SUBSCRIPTION_PRICE_USD}):",
+                f"Продлить на месяц (${price}):",
                 reply_markup=_pay_kb(invoice["bot_invoice_url"]),
             )
             await db.set_last_reminder(telegram_id, today_str)

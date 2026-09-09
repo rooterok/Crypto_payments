@@ -40,6 +40,13 @@ async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
         await db.commit()
+        # Миграция: добавляем колонку персональной цены, если её ещё нет
+        # (для баз, созданных до появления этой функции).
+        cur = await db.execute("PRAGMA table_info(users)")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "custom_price_usd" not in columns:
+            await db.execute("ALTER TABLE users ADD COLUMN custom_price_usd TEXT")
+            await db.commit()
 
 
 async def get_or_create_user(telegram_id: int, username: str | None) -> dict:
@@ -191,6 +198,37 @@ async def users_to_kick(grace_period_days: int) -> list[dict]:
             "SELECT * FROM users WHERE status = 'active' AND paid_until IS NOT NULL "
             "AND paid_until < ?",
             (cutoff,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_price(telegram_id: int, default_price: str) -> str:
+    """Индивидуальная цена пользователя, если задана, иначе — дефолтная."""
+    user = await get_user(telegram_id)
+    if user and user.get("custom_price_usd"):
+        return user["custom_price_usd"]
+    return default_price
+
+
+async def set_custom_price(telegram_id: int, price: str | None) -> None:
+    """price=None сбрасывает персональную цену обратно на дефолтную."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET custom_price_usd = ? WHERE telegram_id = ?",
+            (price, telegram_id),
+        )
+        await db.commit()
+
+
+async def get_all_users() -> list[dict]:
+    """Полный список для выгрузки — /list в admin.py."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT telegram_id, username, status, paid_until, custom_price_usd, created_at "
+            "FROM users ORDER BY "
+            "CASE status WHEN 'active' THEN 0 WHEN 'expired' THEN 1 ELSE 2 END, "
+            "paid_until IS NULL, paid_until"
         )
         return [dict(r) for r in await cur.fetchall()]
 
