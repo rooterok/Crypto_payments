@@ -18,7 +18,7 @@ from aiogram.types import BufferedInputFile, Message
 
 import db
 from config import ADMIN_IDS, SUBSCRIPTION_PRICE_USD
-from payment_logic import grant_trial
+from payment_logic import grant_manual, grant_trial
 
 router = Router()
 
@@ -42,10 +42,11 @@ async def cmd_stats(message: Message) -> None:
 
 
 @router.message(Command("grant"))
-async def cmd_grant(message: Message) -> None:
-    """/grant <telegram_id> <дней> — выдать/продлить доступ вручную.
-    Например, чтобы завести уже существующих 15 платных участников
-    до того, как включать авто-кик за просрочку."""
+async def cmd_grant(message: Message, bot: Bot) -> None:
+    """/grant <telegram_id> <дней> — выдать/продлить доступ вручную (не
+    триал). Шлёт человеку уведомление и одноразовую инвайт-ссылку — подходит
+    и для новых людей, и для переноса уже действующих участников (им ссылка
+    не понадобится, но подписка появится в базе с трекингом даты)."""
     if not _is_admin(message.from_user.id):
         return
     parts = message.text.split()
@@ -60,10 +61,9 @@ async def cmd_grant(message: Message) -> None:
         return
 
     await db.get_or_create_user(telegram_id, None)
-    new_until = await db.extend_subscription(telegram_id, days)
-    await db.set_trial_flag(telegram_id, False)  # ручная выдача — не триал
+    new_until = await grant_manual(bot, telegram_id, days)
     pretty = dt.datetime.fromisoformat(new_until).strftime("%d.%m.%Y")
-    await message.answer(f"Готово. У {telegram_id} доступ до {pretty}.")
+    await message.answer(f"Готово. У {telegram_id} доступ до {pretty}, уведомление и ссылку отправил.")
 
 
 @router.message(Command("trial"))
