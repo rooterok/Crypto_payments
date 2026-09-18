@@ -40,12 +40,16 @@ async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
         await db.commit()
-        # Миграция: добавляем колонку персональной цены, если её ещё нет
-        # (для баз, созданных до появления этой функции).
+        # Миграции для баз, созданных до появления этих колонок.
         cur = await db.execute("PRAGMA table_info(users)")
         columns = {row[1] for row in await cur.fetchall()}
         if "custom_price_usd" not in columns:
             await db.execute("ALTER TABLE users ADD COLUMN custom_price_usd TEXT")
+            await db.commit()
+        if "is_trial" not in columns:
+            await db.execute(
+                "ALTER TABLE users ADD COLUMN is_trial INTEGER NOT NULL DEFAULT 0"
+            )
             await db.commit()
 
 
@@ -104,6 +108,15 @@ async def extend_subscription(telegram_id: int, days: int) -> str:
         )
         await db.commit()
     return new_until.isoformat()
+
+
+async def set_trial_flag(telegram_id: int, is_trial: bool) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET is_trial = ? WHERE telegram_id = ?",
+            (1 if is_trial else 0, telegram_id),
+        )
+        await db.commit()
 
 
 async def set_status(telegram_id: int, status: str) -> None:
@@ -225,7 +238,7 @@ async def get_all_users() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT telegram_id, username, status, paid_until, custom_price_usd, created_at "
+            "SELECT telegram_id, username, status, paid_until, custom_price_usd, is_trial, created_at "
             "FROM users ORDER BY "
             "CASE status WHEN 'active' THEN 0 WHEN 'expired' THEN 1 ELSE 2 END, "
             "paid_until IS NULL, paid_until"

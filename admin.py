@@ -3,6 +3,7 @@
 Нужны в первую очередь чтобы:
   - вручную перенести уже существующих платных участников (/grant),
     прежде чем включать автоматический кик за просрочку;
+  - выдать кому-то бесплатный пробный период (/trial);
   - смотреть, сколько активных подписок и выручка за месяц (/stats);
   - назначать индивидуальные условия конкретному человеку (/setprice);
   - смотреть всю базу подписчиков целиком (/list).
@@ -17,6 +18,7 @@ from aiogram.types import BufferedInputFile, Message
 
 import db
 from config import ADMIN_IDS, SUBSCRIPTION_PRICE_USD
+from payment_logic import grant_trial
 
 router = Router()
 
@@ -59,8 +61,35 @@ async def cmd_grant(message: Message) -> None:
 
     await db.get_or_create_user(telegram_id, None)
     new_until = await db.extend_subscription(telegram_id, days)
+    await db.set_trial_flag(telegram_id, False)  # ручная выдача — не триал
     pretty = dt.datetime.fromisoformat(new_until).strftime("%d.%m.%Y")
     await message.answer(f"Готово. У {telegram_id} доступ до {pretty}.")
+
+
+@router.message(Command("trial"))
+async def cmd_trial(message: Message, bot: Bot) -> None:
+    """/trial <telegram_id> <дней> — выдать бесплатный пробный доступ:
+    сразу открывает канал (шлёт человеку инвайт-ссылку) и помечает его как
+    триального — когда пробный период подойдёт к концу, напоминание придёт
+    с предложением оформить подписку, а не "продлить" (см. /grant для
+    обычной ручной выдачи без этой пометки)."""
+    if not _is_admin(message.from_user.id):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("Использование: /trial <telegram_id> <дней>")
+        return
+    try:
+        telegram_id = int(parts[1])
+        days = int(parts[2])
+    except ValueError:
+        await message.answer("telegram_id и дней должны быть числами")
+        return
+
+    await db.get_or_create_user(telegram_id, None)
+    new_until = await grant_trial(bot, telegram_id, days)
+    pretty = dt.datetime.fromisoformat(new_until).strftime("%d.%m.%Y")
+    await message.answer(f"Готово. У {telegram_id} пробный доступ до {pretty}, ссылку уже отправил.")
 
 
 @router.message(Command("find"))
@@ -82,10 +111,11 @@ async def cmd_find(message: Message) -> None:
         await message.answer("Такого пользователя нет в базе.")
         return
     price = user.get("custom_price_usd") or f"{SUBSCRIPTION_PRICE_USD} (стандартная)"
+    trial_mark = " (триал)" if user.get("is_trial") else ""
     await message.answer(
         f"id: {user['telegram_id']}\n"
         f"username: @{user['username']}\n"
-        f"статус: {user['status']}\n"
+        f"статус: {user['status']}{trial_mark}\n"
         f"paid_until: {user['paid_until']}\n"
         f"цена: ${price}"
     )
@@ -139,7 +169,7 @@ async def cmd_list(message: Message) -> None:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(
-        ["telegram_id", "username", "status", "paid_until", "custom_price_usd", "created_at"]
+        ["telegram_id", "username", "status", "is_trial", "paid_until", "custom_price_usd", "created_at"]
     )
     for u in users:
         writer.writerow(
@@ -147,6 +177,7 @@ async def cmd_list(message: Message) -> None:
                 u["telegram_id"],
                 u["username"] or "",
                 u["status"],
+                "да" if u["is_trial"] else "",
                 u["paid_until"] or "",
                 u["custom_price_usd"] or "",
                 u["created_at"],
